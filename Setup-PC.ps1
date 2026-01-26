@@ -8,19 +8,32 @@
 
 # --- Core Functions ---
 
+$LogDir = Join-Path $PSScriptRoot "logs"
+if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
+$LogFile = Join-Path $LogDir "Setup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+function Log-Message {
+    param([string]$Type, [string]$Message)
+    $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "[$TimeStamp] [$Type] $Message" | Out-File -FilePath $LogFile -Append
+}
+
 function Write-Step {
     param([string]$Message)
     Write-Host "`n[STEP] $Message" -ForegroundColor Cyan
+    Log-Message "STEP" $Message
 }
 
 function Write-Success {
     param([string]$Message)
     Write-Host "[SUCCESS] $Message" -ForegroundColor Green
+    Log-Message "SUCCESS" $Message
 }
 
 function Write-ErrorMsg {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
+    Log-Message "ERROR" $Message
 }
 
 function Set-TaskbarPins {
@@ -43,12 +56,13 @@ function Set-TaskbarPins {
 </LayoutModificationTemplate>
 "@
     $LayoutContent | Out-File $LayoutPath -Encoding utf8
-    # Import for next user profile and try to force for current
     try {
-        Import-StartLayout -LayoutPath $LayoutPath -MountPath $env:SystemDrive\
-        Write-Host "Taskbar layout imported. Note: Changes may only appear after Logoff/Login." -ForegroundColor Yellow
+        # Note: Import-StartLayout is notoriously finicky on active systems.
+        # It usually targets the Default User profile for NEW users.
+        Import-StartLayout -LayoutPath $LayoutPath -MountPath $env:SystemDrive\ -ErrorAction Stop
+        Write-Success "Taskbar layout imported to system."
     } catch {
-        Write-ErrorMsg "Failed to import Taskbar layout."
+        Write-Host "Taskbar layout import failed. This is common on active Windows 11 systems. Pins may need manual setup or a restart of Explorer." -ForegroundColor Yellow
     }
 }
 
@@ -109,13 +123,13 @@ function Connect-Wifi {
     netsh wlan add profile filename=$Path | Out-Null
     netsh wlan connect name=$SSID | Out-Null
     
-    # Wait for connection
+    # Wait for connection and verify
     Start-Sleep -Seconds 5
-    $Status = netsh wlan show interfaces | Select-String "State"
-    if ($Status -like "*connected*") {
-        Write-Success "WiFi connected to $SSID."
+    $WifiCheck = netsh wlan show profile name=$SSID | Select-String "SSID name"
+    if ($WifiCheck) {
+        Write-Success "WiFi Profile '$SSID' successfully added/verified."
     } else {
-        Write-ErrorMsg "WiFi failed to connect to $SSID. Please check password."
+        Write-ErrorMsg "WiFi Profile '$SSID' was NOT found after import."
     }
 }
 
@@ -191,8 +205,26 @@ if ($VpnExe) {
 
 # --- 5. 7-Zip & 6. VLC ---
 Write-Step "Installing Utilities (7-Zip, VLC)..."
-Start-Process -FilePath (Join-Path $InstallersDir "7z.exe") -ArgumentList "/S" -Wait
-Start-Process -FilePath (Join-Path $InstallersDir "vlc.exe") -ArgumentList "/S" -Wait
+$ZipExe = Join-Path $InstallersDir "7z.exe"
+$VlcExe = Join-Path $InstallersDir "vlc.exe"
+
+if (Test-Path $ZipExe) {
+    Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
+    Write-Success "7-Zip installation triggered."
+} else { Write-ErrorMsg "7z.exe not found." }
+
+if (Test-Path $VlcExe) {
+    Write-Host "Attempting VLC install from: $VlcExe" -ForegroundColor Gray
+    $Process = Start-Process -FilePath $VlcExe -ArgumentList "/S" -Wait -PassThru -ErrorAction SilentlyContinue
+    if ($Process.ExitCode -eq 0) {
+        Write-Success "VLC installation completed successfully."
+    } else {
+        Write-ErrorMsg "VLC installer returned error code: $($Process.ExitCode). Check if another installation is in progress."
+    }
+} else { 
+    Write-ErrorMsg "vlc.exe NOT FOUND at expected path: $VlcExe" 
+    Write-Host "Check if your USB drive letter changed (e.g., from D: to F:)." -ForegroundColor Yellow
+}
 
 # --- 7. Windows Updates ---
 Write-Step "Triggering Windows Updates..."
@@ -202,12 +234,16 @@ Start-Process -FilePath "usoclient" -ArgumentList "StartInteractiveScan"
 Write-Step "Installing HP Support Assistant..."
 $HpExe = Join-Path $InstallersDir "HPSupportAssistant.exe"
 if (Test-Path $HpExe) {
-    Start-Process -FilePath $HpExe -ArgumentList "/s /v`"/qn`"" -Wait
+    # Based on the usage message: /s /f <target>
+    $HpTarget = "$env:TEMP\HPSupportAssistant"
+    Start-Process -FilePath $HpExe -ArgumentList "/s /f `"$HpTarget`"" -Wait
+    Write-Success "HP Support Assistant extraction/install triggered."
 }
 
 # --- WhatsApp (msstore) ---
 Write-Step "Installing WhatsApp from Microsoft Store..."
 try {
+    # Added --accept-source-agreements to skip prompt
     winget install --id 9NKSQGP7F2NH --source msstore --accept-package-agreements --accept-source-agreements --silent
     Write-Success "WhatsApp installation finished."
 } catch {
@@ -224,18 +260,35 @@ try {
     if (!(Get-PrinterPort -Name "IP_$PrinterIP" -ErrorAction SilentlyContinue)) {
         Add-PrinterPort -Name "IP_$PrinterIP" -PrinterHostAddress $PrinterIP
     }
-    # Try generic driver
-    $DriverName = "Generic / Text Only"
-    if (!(Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
-       # Try finding any HP driver if available
-       $Driver = Get-PrinterDriver | Where-Object { $_.Name -like "*HP*" } | Select-Object -First 1
-       if ($Driver) { $DriverName = $Driver.Name }
+    # Try to install driver from INF file if provided
+    $InfPath = Join-Path $InstallersDir "UNIV_5.1076.3.0_PCL6_x64_Driver.inf"
+    $DriverName = "UNIV_5.1076.3.0_PCL6_x64" # This is the target name
+
+    if (Test-Path $InfPath) {
+        Write-Step "Installing printer driver from INF: $InfPath"
+        # pnputil /add-driver adds it to the store. /install attempts to install it.
+        $PnpResult = pnputil /add-driver $InfPath /install
+        Log-Message "INFO" "pnputil result: $PnpResult"
+    }
+
+    $DriverCheck = Get-PrinterDriver | Where-Object { $_.Name -like "*$DriverName*" -or $_.Name -like "*Universal Printing PCL 6*" }
+    
+    if (!$DriverCheck) {
+        Write-Host "Driver not found in store after attempt. Checking for any 'HP Universal' or 'Generic'..." -ForegroundColor Yellow
+        $DriverCheck = Get-PrinterDriver | Where-Object { $_.Name -like "*Universal*" -or $_.Name -like "*Generic*" } | Select-Object -First 1
+        if ($DriverCheck) { $DriverName = $DriverCheck.Name }
+        else {
+            Write-ErrorMsg "No suitable printer drivers found. Driver installation from INF might have failed or driver name is different."
+            return
+        }
+    } else {
+        $DriverName = $DriverCheck.Name # Use the exact name found (e.g., "HP Universal Printing PCL 6")
     }
     
     Add-Printer -Name "Office Printer" -PortName "IP_$PrinterIP" -DriverName $DriverName
     Write-Success "Printer 'Office Printer' added using driver '$DriverName'."
 } catch {
-    Write-ErrorMsg "Failed to install printer automatically. Please add manually."
+    Write-ErrorMsg "Failed to install printer automatically: $($_.Exception.Message)"
 }
 
 # --- 14. Ethernet/WiFi Check & GPUpdate ---
@@ -266,8 +319,12 @@ Connect-Wifi -SSID $WifiSSID -Password $WifiPass
 
 # --- Final Manual Steps ---
 Write-Host "`nLaunching Apps for Manual Sign-in..." -ForegroundColor Yellow
-Start-Process "onedrive"
-Start-Process "msteams"
+# Using full paths or standard names for OneDrive/Teams
+$OneDrivePath = "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
+if (Test-Path $OneDrivePath) { Start-Process $OneDrivePath } else { Start-Process "OneDrive.exe" -ErrorAction SilentlyContinue }
+
+$TeamsPath = "$env:LOCALAPPDATA\Microsoft\Teams\current\Teams.exe"
+if (Test-Path $TeamsPath) { Start-Process $TeamsPath } else { Start-Process "ms-teams.exe" -ErrorAction SilentlyContinue }
 
 # --- Power & Clock ---
 Write-Step "Setting Power Options & Clock..."

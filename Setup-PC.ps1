@@ -151,9 +151,14 @@ Write-Host "   PC ONBOARDING AUTOMATION SYSTEM v2.0   " -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
 $UserEmail = Read-Host "Enter User Email address"
-$UserPassword = Read-Host "Enter User Password"
+$SecurePassword = Read-Host "Enter User Password" -AsSecureString
+# Convert SecureString to plain text for use in script
+$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+$UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
 $PrinterIP = "10.58.197.197"
-$WifiSSID = "Barriera"
+$WifiSSID = "BARRIERA"
 $WifiPass = "MeSD05o818"
 
 $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
@@ -203,27 +208,22 @@ if ($VpnExe) {
     Write-ErrorMsg "VPN installer not found."
 }
 
-# --- 5. 7-Zip & 6. VLC ---
+# --- 5. 7-Zip & 6. VLC (msstore) ---
 Write-Step "Installing Utilities (7-Zip, VLC)..."
 $ZipExe = Join-Path $InstallersDir "7z.exe"
-$VlcExe = Join-Path $InstallersDir "vlc.exe"
 
 if (Test-Path $ZipExe) {
     Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
     Write-Success "7-Zip installation triggered."
 } else { Write-ErrorMsg "7z.exe not found." }
 
-if (Test-Path $VlcExe) {
-    Write-Host "Attempting VLC install from: $VlcExe" -ForegroundColor Gray
-    $Process = Start-Process -FilePath $VlcExe -ArgumentList "/S" -Wait -PassThru -ErrorAction SilentlyContinue
-    if ($Process.ExitCode -eq 0) {
-        Write-Success "VLC installation completed successfully."
-    } else {
-        Write-ErrorMsg "VLC installer returned error code: $($Process.ExitCode). Check if another installation is in progress."
-    }
-} else { 
-    Write-ErrorMsg "vlc.exe NOT FOUND at expected path: $VlcExe" 
-    Write-Host "Check if your USB drive letter changed (e.g., from D: to F:)." -ForegroundColor Yellow
+try {
+    Write-Host "Installing VLC from Microsoft Store..." -ForegroundColor Gray
+    # VLC Store ID: 9NBLGGH4VVW2
+    winget install --id XP89DCGQ3K6VLD --source msstore --accept-package-agreements --accept-source-agreements --silent
+    Write-Success "VLC installation via MS Store finished."
+} catch {
+    Write-ErrorMsg "Failed to install VLC via winget."
 }
 
 # --- 7. Windows Updates ---
@@ -254,42 +254,39 @@ try {
 Set-TaskbarPins
 Set-DefaultApps
 
-# --- 11. Printer Installation ---
-Write-Step "Installing Printer ($PrinterIP)..."
+
+# --- Printer Installation (Follow Me via Print Server) ---
+Write-Step "Installing 'Follow Me' printer from print server..."
+
+$PrintServer = "10.58.197.197"
+$ShareName   = "FollowMe"
+$Connection  = "\\$PrintServer\$ShareName"
+
 try {
-    if (!(Get-PrinterPort -Name "IP_$PrinterIP" -ErrorAction SilentlyContinue)) {
-        Add-PrinterPort -Name "IP_$PrinterIP" -PrinterHostAddress $PrinterIP
-    }
-    # Try to install driver from INF file if provided
-    $InfPath = Join-Path $InstallersDir "UNIV_5.1076.3.0_PCL6_x64_Driver.inf"
-    $DriverName = "UNIV_5.1076.3.0_PCL6_x64" # This is the target name
-
-    if (Test-Path $InfPath) {
-        Write-Step "Installing printer driver from INF: $InfPath"
-        # pnputil /add-driver adds it to the store. /install attempts to install it.
-        $PnpResult = pnputil /add-driver $InfPath /install
-        Log-Message "INFO" "pnputil result: $PnpResult"
+    # Check if printer already exists
+    if (Get-Printer -Name $ShareName -ErrorAction SilentlyContinue) {
+        Write-Host "Printer '$ShareName' already installed."
+        return
     }
 
-    $DriverCheck = Get-PrinterDriver | Where-Object { $_.Name -like "*$DriverName*" -or $_.Name -like "*Universal Printing PCL 6*" }
+    Write-Host "Connecting to shared printer $Connection ..."
+    Add-Printer -ConnectionName $Connection -ErrorAction Stop
+
+    Write-Success "Printer '$ShareName' installed successfully from $PrintServer."
+
+# Give spooler a moment to fully register the printer
+    Start-Sleep -Seconds 3
     
-    if (!$DriverCheck) {
-        Write-Host "Driver not found in store after attempt. Checking for any 'HP Universal' or 'Generic'..." -ForegroundColor Yellow
-        $DriverCheck = Get-PrinterDriver | Where-Object { $_.Name -like "*Universal*" -or $_.Name -like "*Generic*" } | Select-Object -First 1
-        if ($DriverCheck) { $DriverName = $DriverCheck.Name }
-        else {
-            Write-ErrorMsg "No suitable printer drivers found. Driver installation from INF might have failed or driver name is different."
-            return
-        }
-    } else {
-        $DriverName = $DriverCheck.Name # Use the exact name found (e.g., "HP Universal Printing PCL 6")
-    }
-    
-    Add-Printer -Name "Office Printer" -PortName "IP_$PrinterIP" -DriverName $DriverName
-    Write-Success "Printer 'Office Printer' added using driver '$DriverName'."
-} catch {
-    Write-ErrorMsg "Failed to install printer automatically: $($_.Exception.Message)"
+    # Send test page
+    Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
+    Write-Success "Test page sent to '$ShareName'."
+
 }
+catch {
+    Write-ErrorMsg "Follow Me printer setup failed: $($_.Exception.Message)"
+}
+
+
 
 # --- 14. Ethernet/WiFi Check & GPUpdate ---
 Write-Step "Running gpupdate /force..."
@@ -315,6 +312,7 @@ if (Get-Service -Name "CcmExec" -ErrorAction SilentlyContinue) {
 }
 
 # --- 17. WiFi Connection ---
+Write-Step "Configuring WiFi Profile for $WifiSSID ..."
 Connect-Wifi -SSID $WifiSSID -Password $WifiPass
 
 # --- Final Manual Steps ---

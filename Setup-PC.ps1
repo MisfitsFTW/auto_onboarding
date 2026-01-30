@@ -76,7 +76,8 @@ function Connect-Wifi {
     $WifiCheck = netsh wlan show profile name=$SSID | Select-String "SSID name"
     if ($WifiCheck) {
         Write-Success "WiFi Profile '$SSID' successfully added/verified."
-    } else {
+    }
+    else {
         Write-ErrorMsg "WiFi Profile '$SSID' was NOT found after import."
     }
 }
@@ -100,11 +101,17 @@ Write-Host "==========================================" -ForegroundColor Green
 
 
 
-$PrinterIP = "10.58.197.197"
 $WifiSSID = "BARRIERA"
 $WifiPass = "MeSD05o818"
 
 $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
+
+Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
+Write-Host "1. HP (HP Support Assistant)"
+Write-Host "2. Dell (Dell Command Centre)"
+Write-Host "3. ASUS (MyASUS)"
+Write-Host "4. Skip / Other"
+$BrandChoice = Read-Host "Enter Choice (1-4)"
 
 # --- 1. Install Office 365 ---
 if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
@@ -123,10 +130,12 @@ if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
     if (Test-Path $OfficeSetup) {
         Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -Wait
         Write-Success "Office 365 installation finished."
-    } else {
+    }
+    else {
         Write-ErrorMsg "Office Setup not found at $OfficeSetup"
     }
-} else {
+}
+else {
     Write-Step "Skipping Office 365 installation as requested."
 }
 
@@ -143,70 +152,103 @@ if (Test-Path $SigZip) {
     if (Test-Path $VbsPath) {
         Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`""
         Write-Success "Email Signature script executed."
-    } else {
+    }
+    else {
         Write-ErrorMsg "VBS script $SigVbsName not found inside zip."
     }
 }
 
 # --- 4. VPN Installation ---
 Write-Step "Installing VPN..."
-$VpnExe = Get-ChildItem -Path $InstallersDir -Filter "*VPN*" | Select-Object -First 1
+$VpnExe = Get-ChildItem -Path $InstallersDir "VPN_Setup.exe"
 if ($VpnExe) {
     # Using more aggressive silent flags
     Start-Process -FilePath $VpnExe.FullName -ArgumentList "/S /VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
     Write-Success "VPN installation triggered."
-} else {
+}
+else {
     Write-ErrorMsg "VPN installer not found."
 }
 
-# --- 5. 7-Zip & 6. VLC (local) ---
+
+# --- 5. 7-Zip & 6. VLC (Winget) ---
 Write-Step "Installing Utilities (7-Zip, VLC)..."
 $ZipExe = Join-Path $InstallersDir "7z.exe"
 
 if (Test-Path $ZipExe) {
     Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
     Write-Success "7-Zip installation triggered."
-} else { Write-ErrorMsg "7z.exe not found." }
+}
+else { Write-ErrorMsg "7z.exe not found." }
 
-    $VlcExe = Join-Path $InstallersDir "vlc.exe"
-    if (Test-Path $VlcExe) {
-        Write-Host "Installing VLC from local file..." -ForegroundColor Gray
-        Start-Process -FilePath $VlcExe -ArgumentList "/S" -Wait
-        Write-Success "VLC installation finished."
-    } else {
-        Write-ErrorMsg "Vlc installer not found at $VlcExe"
-    }
+Write-Step "Installing VLC via Winget..."
+winget install VideoLAN.VLC --silent --accept-package-agreements --accept-source-agreements
+if ($LASTEXITCODE -eq 0) {
+    Write-Success "VLC installation via Winget finished."
+}
+else {
+    Write-ErrorMsg "VLC installation via Winget failed or was already present."
+}
 
 # --- 7. Windows Updates ---
 Write-Step "Triggering Windows Updates..."
 Start-Process -FilePath "usoclient" -ArgumentList "StartInteractiveScan"
 
-# --- 8. HP Support Assistant ---
-Write-Step "Installing HP Support Assistant..."
-$HpExe = Join-Path $InstallersDir "HPSupportAssistant.exe"
-if (Test-Path $HpExe) {
-    # Based on the usage message: /s /f <target>
-    $HpTarget = "$env:TEMP\HPSupportAssistant"
-    Start-Process -FilePath $HpExe -ArgumentList "/s /f `"$HpTarget`"" -Wait
-    Write-Success "HP Support Assistant extraction/install triggered."
+# --- 8. Brand Specific System Tools ---
+Write-Step "Installing System Specific Software..."
+switch ($BrandChoice) {
+    "1" {
+        $HpExe = Join-Path $InstallersDir "HPSupportAssistant.exe"
+        if (Test-Path $HpExe) {
+            # Based on the usage message: /s /f <target>
+            $HpTarget = "$env:TEMP\HPSupportAssistant"
+            Start-Process -FilePath $HpExe -ArgumentList "/s /f `"$HpTarget`"" -Wait
+            Write-Success "HP Support Assistant extraction/install triggered."
+        }
+        else {
+            Write-ErrorMsg "HP Support Assistant installer not found at $HpExe"
+        }
+    }
+    "2" {
+        $DellExe = Join-Path $InstallersDir "DellCommandCentre.exe"
+        if (Test-Path $DellExe) {
+            Start-Process -FilePath $DellExe -ArgumentList "/S" -Wait
+            Write-Success "Dell Command Centre installation triggered."
+        }
+        else {
+            Write-ErrorMsg "Dell Command Centre installer not found at $DellExe"
+        }
+    }
+    "3" {
+        $AsusExe = Join-Path $InstallersDir "MyASUS.exe"
+        if (Test-Path $AsusExe) {
+            Start-Process -FilePath $AsusExe -ArgumentList "/S" -Wait
+            Write-Success "MyASUS installation triggered."
+        }
+        else {
+            Write-ErrorMsg "MyASUS installer not found at $AsusExe"
+        }
+    }
+    Default { Write-Step "Skipping system-specific tool installation." }
 }
 
-    # --- WhatsApp (Local) ---
-    Write-Step "Installing WhatsApp from local file..."
-    $WhatsAppExe = Join-Path $InstallersDir "WhatsApp.exe"
-    if (Test-Path $WhatsAppExe) {
-        Start-Process -FilePath $WhatsAppExe -ArgumentList "/S" -Wait
-        Write-Success "WhatsApp installation triggered."
-    } else {
-        Write-ErrorMsg "WhatsApp installer not found at $WhatsAppExe"
-    }
+# --- WhatsApp (Local) ---
+Write-Step "Installing WhatsApp from local file..."
+$WhatsAppExe = Join-Path $InstallersDir "WhatsApp.exe"
+if (Test-Path $WhatsAppExe) {
+    Start-Process -FilePath $WhatsAppExe -ArgumentList "/S" -Wait
+    Write-Success "WhatsApp installation triggered."
+}
+else {
+    Write-ErrorMsg "WhatsApp installer not found at $WhatsAppExe"
+}
 
 # --- Printer Installation (Follow Me via Print Server) ---
 Write-Step "Installing 'Follow Me' printer from print server..."
 
 $PrintServer = "10.58.197.197"
-$ShareName   = "FollowMe"
-$Connection  = "\\$PrintServer\$ShareName"
+$ShareName = "FollowMe"
+$Connection = "\\$PrintServer\$ShareName"
 
 try {
     # Check if printer already exists
@@ -220,7 +262,7 @@ try {
 
     Write-Success "Printer '$ShareName' installed successfully from $PrintServer."
 
-# Give spooler a moment to fully register the printer
+    # Give spooler a moment to fully register the printer
     Start-Sleep -Seconds 3
     
     # Send test page
@@ -228,7 +270,8 @@ try {
     if ($cim) {
         Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
         Write-Success "Test page sent to '$ShareName'."
-    } else {
+    }
+    else {
         Write-ErrorMsg "Printer CIM object not found for test page."
     }
 
@@ -243,9 +286,17 @@ catch {
 Write-Step "Running gpupdate /force..."
 $Connection = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
 if ($Connection) {
-    gpupdate /force
-    Write-Success "GPUpdate completed."
-} else {
+    # Use Start-Process with a timeout to prevent hanging
+    $gpProcess = Start-Process "gpupdate.exe" -ArgumentList "/force" -PassThru -NoNewWindow
+    $gpProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+    if (!$gpProcess.HasExited) {
+        Write-Warning "GPUpdate is taking too long, continuing to next steps..."
+    }
+    else {
+        Write-Success "GPUpdate completed."
+    }
+}
+else {
     Write-ErrorMsg "No active network connection found! GPUpdate skipped."
 }
 
@@ -254,11 +305,13 @@ Write-Step "Triggering Configuration Manager Actions..."
 if (Get-Service -Name "CcmExec" -ErrorAction SilentlyContinue) {
     try {
         $SmsClient = [wmiclass]"\\.\root\ccm:SMS_Client"
-        $Actions = @("{00000000-0000-0000-0000-000000000001}","{00000000-0000-0000-0000-000000000002}","{00000000-0000-0000-0000-000000000021}")
+        $Actions = @("{00000000-0000-0000-0000-000000000001}", "{00000000-0000-0000-0000-000000000002}", "{00000000-0000-0000-0000-000000000021}")
         foreach ($Action in $Actions) { $SmsClient.TriggerSchedule($Action) | Out-Null }
         Write-Success "ConfigMgr actions triggered."
-    } catch { Write-ErrorMsg "Failed to trigger ConfigMgr actions." }
-} else {
+    }
+    catch { Write-ErrorMsg "Failed to trigger ConfigMgr actions." }
+}
+else {
     Write-ErrorMsg "Configuration Manager client not found."
 }
 
@@ -287,7 +340,7 @@ $RegPath = "HKCU:\Control Panel\International"
 Set-ItemProperty -Path $RegPath -Name sShortTime -Value "h:mm tt"
 Set-ItemProperty -Path $RegPath -Name sTimeFormat -Value "h:mm:ss tt"
 # Force refresh
-& rundll32.exe user32.dll,UpdatePerUserSystemParameters
+& rundll32.exe user32.dll, UpdatePerUserSystemParameters
 
 Write-Host "`nSETUP FINISHED!" -ForegroundColor Cyan
 Write-Host "Please check Taskbar and Defaults after logging off/in." -ForegroundColor Yellow

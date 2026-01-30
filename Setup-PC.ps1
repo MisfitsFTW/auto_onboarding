@@ -158,16 +158,32 @@ if (Test-Path $SigZip) {
     }
 }
 
-# --- 4. VPN Installation ---
-Write-Step "Installing VPN..."
-$VpnExe = Get-ChildItem -Path $InstallersDir "VPN_Setup.exe"
-if ($VpnExe) {
-    # Using more aggressive silent flags
-    Start-Process -FilePath $VpnExe.FullName -ArgumentList "/S /VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
-    Write-Success "VPN installation triggered."
+# --- 4. VPN Automated Download & Install ---
+Write-Step "Handling VPN Installation..."
+$VpnFileName = "FortiClientVPNSetup_7.2.12.1269_x64.exe"
+$VpnLocalPath = Join-Path $InstallersDir $VpnFileName
+$VpnDownloadUrl = "https://vpn.mita.gov.mt/Software/FortiClient%20VPN%20for%20Windows/$VpnFileName"
+
+if (!(Test-Path $VpnLocalPath)) {
+    Write-Host "VPN Installer not found locally. Attempting to download specific version from portal..." -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri $VpnDownloadUrl -OutFile $VpnLocalPath -ErrorAction Stop
+        Write-Success "VPN Installer downloaded successfully."
+    }
+    catch {
+        Write-Warning "Failed to download VPN installer from $VpnDownloadUrl. Proceeding with local install if possible."
+    }
+}
+
+$VpnToInstall = Get-ChildItem -Path $InstallersDir -Filter "FortiClientVPNSetup*.exe" | Select-Object -First 1
+if ($VpnToInstall) {
+    Write-Step "Installing VPN ($($VpnToInstall.Name))..."
+    # Using /quiet /norestart for reliable silent installation
+    Start-Process -FilePath $VpnToInstall.FullName -ArgumentList "/quiet /norestart" -Wait
+    Write-Success "VPN installation command executed."
 }
 else {
-    Write-ErrorMsg "VPN installer not found."
+    Write-ErrorMsg "No VPN installer (FortiClientVPNSetup*.exe) found."
 }
 
 

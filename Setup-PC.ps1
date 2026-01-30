@@ -36,58 +36,6 @@ function Write-ErrorMsg {
     Log-Message "ERROR" $Message
 }
 
-function Set-TaskbarPins {
-    Write-Step "Configuring Taskbar Pins..."
-    # For Windows 10/11, LayoutModification.xml is the cleanest official way
-    $LayoutPath = "$env:TEMP\TaskbarLayout.xml"
-    $LayoutContent = @"
-<LayoutModificationTemplate xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout" xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" Version="1" xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification">
-  <CustomTaskbarLayoutCollection PinListPlacement="Replace">
-    <defaultlayout:TaskbarLayout>
-      <taskbar:TaskbarPinList xmlns:taskbar="http://schemas.microsoft.com/Start/2014/TaskbarLayout">
-        <taskbar:DesktopApp DesktopApplicationID="Microsoft.Office.OUTLOOK.EXE.15" />
-        <taskbar:DesktopApp DesktopApplicationID="Microsoft.Office.WINWORD.EXE.15" />
-        <taskbar:DesktopApp DesktopApplicationID="Microsoft.Office.EXCEL.EXE.15" />
-        <taskbar:DesktopApp DesktopApplicationID="com.squirrel.Teams.Teams" />
-        <taskbar:DesktopApp DesktopApplicationLinkPath="%APPDATA%\Microsoft\Windows\Start Menu\Programs\Google Chrome.lnk" />
-      </taskbar:TaskbarPinList>
-    </defaultlayout:TaskbarLayout>
-  </CustomTaskbarLayoutCollection>
-</LayoutModificationTemplate>
-"@
-    $LayoutContent | Out-File $LayoutPath -Encoding utf8
-    try {
-        # Note: Import-StartLayout is notoriously finicky on active systems.
-        # It usually targets the Default User profile for NEW users.
-        Import-StartLayout -LayoutPath $LayoutPath -MountPath $env:SystemDrive\ -ErrorAction Stop
-        Write-Success "Taskbar layout imported to system."
-    } catch {
-        Write-Host "Taskbar layout import failed. This is common on active Windows 11 systems. Pins may need manual setup or a restart of Explorer." -ForegroundColor Yellow
-    }
-}
-
-function Set-DefaultApps {
-    Write-Step "Setting Default Apps (Chrome, Acrobat)..."
-    $AssocPath = "$env:TEMP\AppAssoc.xml"
-    $AssocContent = @"
-<?xml version="1.0" encoding="UTF-8"?>
-<DefaultAssociations>
-  <Association Identifier=".html" ProgId="ChromeHTML" ApplicationName="Google Chrome" />
-  <Association Identifier=".htm" ProgId="ChromeHTML" ApplicationName="Google Chrome" />
-  <Association Identifier="http" ProgId="ChromeHTML" ApplicationName="Google Chrome" />
-  <Association Identifier="https" ProgId="ChromeHTML" ApplicationName="Google Chrome" />
-  <Association Identifier=".pdf" ProgId="Acrobat.Document.DC" ApplicationName="Adobe Acrobat Reader" />
-</DefaultAssociations>
-"@
-    $AssocContent | Out-File $AssocPath -Encoding utf8
-    $DismResult = Dism /Online /Import-DefaultAppAssociations:$AssocPath
-    if ($DismResult -like "*The operation completed successfully*") {
-        Write-Success "Default applications set."
-    } else {
-        Write-ErrorMsg "Dism failed to set default applications."
-    }
-}
-
 function Connect-Wifi {
     param($SSID, $Password)
     Write-Step "Configuring WiFi Profile for $SSID..."
@@ -150,12 +98,7 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "   PC ONBOARDING AUTOMATION SYSTEM v2.0   " -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
-$UserEmail = Read-Host "Enter User Email address"
-$SecurePassword = Read-Host "Enter User Password" -AsSecureString
-# Convert SecureString to plain text for use in script
-$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-$UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
 
 $PrinterIP = "10.58.197.197"
 $WifiSSID = "BARRIERA"
@@ -165,6 +108,14 @@ $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
 
 # --- 1. Install Office 365 ---
 if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
+    # Collect credentials only when needed
+    $UserEmail = Read-Host "Enter User Email address"
+    $SecurePassword = Read-Host "Enter User Password" -AsSecureString
+    # Convert SecureString to plain text for use in script
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    $UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
     Write-Step "Installing Office 365..."
     $OfficeSetup = Join-Path $InstallersDir "Office\setup.exe"
     $OfficeConfig = Join-Path $InstallersDir "Office\configuration.xml"
@@ -190,7 +141,7 @@ if (Test-Path $SigZip) {
     Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
     $VbsPath = Join-Path $SigTemp $SigVbsName
     if (Test-Path $VbsPath) {
-        Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -Wait
+        Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`""
         Write-Success "Email Signature script executed."
     } else {
         Write-ErrorMsg "VBS script $SigVbsName not found inside zip."
@@ -208,7 +159,7 @@ if ($VpnExe) {
     Write-ErrorMsg "VPN installer not found."
 }
 
-# --- 5. 7-Zip & 6. VLC (msstore) ---
+# --- 5. 7-Zip & 6. VLC (local) ---
 Write-Step "Installing Utilities (7-Zip, VLC)..."
 $ZipExe = Join-Path $InstallersDir "7z.exe"
 
@@ -217,14 +168,14 @@ if (Test-Path $ZipExe) {
     Write-Success "7-Zip installation triggered."
 } else { Write-ErrorMsg "7z.exe not found." }
 
-try {
-    Write-Host "Installing VLC from Microsoft Store..." -ForegroundColor Gray
-    # VLC Store ID: 9NBLGGH4VVW2
-    winget install --id XP89DCGQ3K6VLD --source msstore --accept-package-agreements --accept-source-agreements --silent
-    Write-Success "VLC installation via MS Store finished."
-} catch {
-    Write-ErrorMsg "Failed to install VLC via winget."
-}
+    $VlcExe = Join-Path $InstallersDir "vlc.exe"
+    if (Test-Path $VlcExe) {
+        Write-Host "Installing VLC from local file..." -ForegroundColor Gray
+        Start-Process -FilePath $VlcExe -ArgumentList "/S" -Wait
+        Write-Success "VLC installation finished."
+    } else {
+        Write-ErrorMsg "Vlc installer not found at $VlcExe"
+    }
 
 # --- 7. Windows Updates ---
 Write-Step "Triggering Windows Updates..."
@@ -240,20 +191,15 @@ if (Test-Path $HpExe) {
     Write-Success "HP Support Assistant extraction/install triggered."
 }
 
-# --- WhatsApp (msstore) ---
-Write-Step "Installing WhatsApp from Microsoft Store..."
-try {
-    # Added --accept-source-agreements to skip prompt
-    winget install --id 9NKSQGP7F2NH --source msstore --accept-package-agreements --accept-source-agreements --silent
-    Write-Success "WhatsApp installation finished."
-} catch {
-    Write-ErrorMsg "Failed to install WhatsApp via winget."
-}
-
-# --- 9-10. Taskbar & Defaults ---
-Set-TaskbarPins
-Set-DefaultApps
-
+    # --- WhatsApp (Local) ---
+    Write-Step "Installing WhatsApp from local file..."
+    $WhatsAppExe = Join-Path $InstallersDir "WhatsApp.exe"
+    if (Test-Path $WhatsAppExe) {
+        Start-Process -FilePath $WhatsAppExe -ArgumentList "/S" -Wait
+        Write-Success "WhatsApp installation triggered."
+    } else {
+        Write-ErrorMsg "WhatsApp installer not found at $WhatsAppExe"
+    }
 
 # --- Printer Installation (Follow Me via Print Server) ---
 Write-Step "Installing 'Follow Me' printer from print server..."
@@ -278,8 +224,13 @@ try {
     Start-Sleep -Seconds 3
     
     # Send test page
-    Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
-    Write-Success "Test page sent to '$ShareName'."
+    $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%$ShareName%'"
+    if ($cim) {
+        Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
+        Write-Success "Test page sent to '$ShareName'."
+    } else {
+        Write-ErrorMsg "Printer CIM object not found for test page."
+    }
 
 }
 catch {

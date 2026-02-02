@@ -105,6 +105,7 @@ $WifiSSID = "BARRIERA"
 $WifiPass = "MeSD05o818"
 
 $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
+$OfficeProcess = $null
 
 Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
 Write-Host "1. HP (HP Support Assistant)"
@@ -128,8 +129,9 @@ if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
     $OfficeConfig = Join-Path $InstallersDir "Office\configuration.xml"
 
     if (Test-Path $OfficeSetup) {
-        Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -Wait
-        Write-Success "Office 365 installation finished."
+        Write-Step "Starting Office 365 installation in background..."
+        $OfficeProcess = Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -PassThru
+        Write-Success "Office 365 installation started."
     }
     else {
         Write-ErrorMsg "Office Setup not found at $OfficeSetup"
@@ -146,6 +148,13 @@ $SigTemp = Join-Path $env:TEMP "SignatureSetup"
 $SigVbsName = "Gov_Corporate_Email_Signature.vbs"
 
 if (Test-Path $SigZip) {
+    # It is crucial to wait for Office/Outlook to be ready before firing the signature script
+    if ($OfficeProcess) {
+        Write-Step "Waiting for Office 365 background installation to finish before setting email signature..."
+        $OfficeProcess | Wait-Process
+        Write-Success "Office 365 installation finished. Proceeding with signature."
+    }
+
     if (Test-Path $SigTemp) { Remove-Item $SigTemp -Recurse -Force }
     Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
     $VbsPath = Join-Path $SigTemp $SigVbsName

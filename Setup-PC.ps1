@@ -268,34 +268,41 @@ else {
 }
 
 # --- Printer Installation (Follow Me via Print Server) ---
-Write-Step "Installing 'Follow Me' printer using printui.dll..."
-
+Write-Step "Installing 'Follow Me' printer (User Context)..."
 $PrinterPath = "\\10.58.197.197\FollowMe"
+$TaskName = "PrinterMap_$(Get-Random)"
 
-try {
-    # Force the connection using the Windows shell handler as the logged-in user (non-admin)
-    # We use explorer.exe to spawn a non-elevated process from this elevated one.
-    Write-Host "Triggering printer connection for $PrinterPath ..."
-    Start-Process "explorer.exe" -ArgumentList "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`"" -Wait
-    
-    Write-Success "Printer connection triggered via printui.dll."
+# Detect the current interactive user
+$LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
 
-    # Give it a moment to register in the user session
-    Start-Sleep -Seconds 5
+if ($LoggedUser) {
+    Write-Host "Detected Interactive User: $LoggedUser"
+    Write-Host "Triggering connection and test page for $PrinterPath via Scheduled Task..."
     
-    # Send test page (Note: Invoke-CimMethod might fail if run as Admin on a per-user printer, 
-    # but we attempt it anyway for verification).
-    $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%FollowMe%'"
-    if ($cim) {
-        Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
-        Write-Success "Test page sent to 'FollowMe'."
+    try {
+        # Define the action: Map printer (/in), Set Default (/y), then trigger test page (/k)
+        $UserCommand = "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`" /q; Start-Sleep -s 5; rundll32.exe printui.dll,PrintUIEntry /y /n `"$PrinterPath`"; rundll32.exe printui.dll,PrintUIEntry /k /n `"$PrinterPath`""
+        $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$UserCommand`""
+        
+        # Define the principal (Run as the logged-in user, interactive)
+        $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+        
+        # Register and start the task
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        
+        Write-Success "Printer mapping and test page triggered in $LoggedUser's profile."
+        
+        # Give it time to process before cleanup
+        Start-Sleep -Seconds 15
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
-    else {
-        Write-Warning "Printer object not found in current CIM scope. It may still be installing in the user session."
+    catch {
+        Write-ErrorMsg "Failed to create or run scheduled task: $($_.Exception.Message)"
     }
 }
-catch {
-    Write-ErrorMsg "Printer setup failed: $($_.Exception.Message)"
+else {
+    Write-ErrorMsg "No interactive user detected. Ensure you are logged in to the desktop."
 }
 
 
@@ -348,18 +355,40 @@ if (Test-Path $TeamsPath) { Start-Process $TeamsPath } else { Start-Process "ms-
 
 # --- Power & Clock ---
 Write-Step "Setting Power Options & Clock..."
-# Lid actions
+
+# 1. Power Settings (System-wide, Admin ok)
 powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1
 powercfg /setactive SCHEME_CURRENT
 
-# Clock format (12-hour)
-$RegPath = "HKCU:\Control Panel\International"
-Set-ItemProperty -Path $RegPath -Name sShortTime -Value "h:mm tt"
-Set-ItemProperty -Path $RegPath -Name sTimeFormat -Value "h:mm:ss tt"
-# Force refresh
-& rundll32.exe user32.dll, UpdatePerUserSystemParameters
+# 2. User-specific Registry Settings (Clock Format)
+$LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
+if ($LoggedUser) {
+    Write-Host "Applying user-specific settings for $LoggedUser..."
+    $TaskName = "UserFinalize_$(Get-Random)"
+    
+    # Build the registry and refresh command
+    $RegCmd = "Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name sShortTime -Value 'h:mm tt'; " +
+    "Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name sTimeFormat -Value 'h:mm:ss tt'; " +
+    "& rundll32.exe user32.dll, UpdatePerUserSystemParameters"
+    
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$RegCmd`""
+    $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+    
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        Write-Success "Clock settings triggered in $LoggedUser's profile. Kindly restart your computer to see the changes."
+        Start-Sleep -Seconds 5
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+    catch {
+        Write-ErrorMsg "Failed to apply user settings: $($_.Exception.Message)"
+    }
+}
+else {
+    Write-ErrorMsg "No interactive user detected for registry settings."
+}
 
-Write-Host "`nSETUP FINISHED!" -ForegroundColor Cyan
-Write-Host "Please check Taskbar and Defaults after logging off/in." -ForegroundColor Yellow
-pause
+Write-Success "Finalization step completed."
+

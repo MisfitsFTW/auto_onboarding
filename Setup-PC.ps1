@@ -220,11 +220,43 @@ function Step-Signature {
 }
 
 function Step-Printer {
-    Write-Step "Installing 'Follow Me' printer (Non-admin context)..."
+    Write-Step "Installing 'Follow Me' printer (User Context)..."
     $PrinterPath = "\\10.58.197.197\FollowMe"
-    Write-Host "Triggering connection for $PrinterPath ..."
-    Start-Process "explorer.exe" -ArgumentList "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`"" -Wait
-    Write-Success "Printer connection triggered."
+    $TaskName = "PrinterMap_$(Get-Random)"
+    
+    # Detect the current interactive user
+    $LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
+
+    if ($LoggedUser) {
+        Write-Host "Detected Interactive User: $LoggedUser"
+        Write-Host "Triggering connection for $PrinterPath via Scheduled Task..."
+        
+        try {
+            # Define the action
+            $Action = New-ScheduledTaskAction -Execute "rundll32.exe" -Argument "printui.dll,PrintUIEntry /in /n `"$PrinterPath`""
+            
+            # Define the principal (Run as the logged-in user, interactive)
+            $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+            
+            # Register and start the task
+            Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            
+            Write-Success "Printer mapping triggered in $LoggedUser's profile."
+            
+            # Give it some time to process before cleanup
+            Start-Sleep -Seconds 10
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        }
+        catch {
+            Write-ErrorMsg "Failed to create or run scheduled task: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-ErrorMsg "No interactive user detected. Ensure you are logged in to the desktop."
+    }
+
+    # Optional test page (System context might not see per-user printer immediately)
     Start-Sleep -Seconds 5
     $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%FollowMe%'"
     if ($cim) {

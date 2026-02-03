@@ -105,14 +105,6 @@ $WifiSSID = "BARRIERA"
 $WifiPass = "MeSD05o818"
 
 $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
-$OfficeProcess = $null
-
-Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
-Write-Host "1. HP (HP Support Assistant)"
-Write-Host "2. Dell (Dell Command Centre)"
-Write-Host "3. ASUS (MyASUS)"
-Write-Host "4. Skip / Other"
-$BrandChoice = Read-Host "Enter Choice (1-4)"
 
 # --- 1. Install Office 365 ---
 if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
@@ -124,14 +116,13 @@ if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
     $UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 
-    Write-Step "Installing Office 365..."
+    Write-Step "Installing Office 365 (this may take several minutes)..."
     $OfficeSetup = Join-Path $InstallersDir "Office\setup.exe"
     $OfficeConfig = Join-Path $InstallersDir "Office\configuration.xml"
 
     if (Test-Path $OfficeSetup) {
-        Write-Step "Starting Office 365 installation in background..."
-        $OfficeProcess = Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -PassThru
-        Write-Success "Office 365 installation started."
+        Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -Wait
+        Write-Success "Office 365 installation finished."
     }
     else {
         Write-ErrorMsg "Office Setup not found at $OfficeSetup"
@@ -141,6 +132,14 @@ else {
     Write-Step "Skipping Office 365 installation as requested."
 }
 
+# --- 2. Brand Selection (UI) ---
+Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
+Write-Host "1. HP (HP Support Assistant)"
+Write-Host "2. Dell (Dell Command Centre)"
+Write-Host "3. ASUS (MyASUS)"
+Write-Host "4. Skip / Other"
+$BrandChoice = Read-Host "Enter Choice (1-4)"
+
 # --- 3. Email Signature (VBS from Zip) ---
 Write-Step "Configuring Email Signature..."
 $SigZip = Join-Path $InstallersDir "SignatureSetup.zip"
@@ -148,19 +147,20 @@ $SigTemp = Join-Path $env:TEMP "SignatureSetup"
 $SigVbsName = "Gov_Corporate_Email_Signature.vbs"
 
 if (Test-Path $SigZip) {
-    # It is crucial to wait for Office/Outlook to be ready before firing the signature script
-    if ($OfficeProcess) {
-        Write-Step "Waiting for Office 365 background installation to finish before setting email signature..."
-        $OfficeProcess | Wait-Process
-        Write-Success "Office 365 installation finished. Proceeding with signature."
-    }
-
     if (Test-Path $SigTemp) { Remove-Item $SigTemp -Recurse -Force }
     Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
     $VbsPath = Join-Path $SigTemp $SigVbsName
     if (Test-Path $VbsPath) {
-        Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`""
-        Write-Success "Email Signature script executed."
+        Write-Step "Executing Email Signature script (waiting max 30s)..."
+        $sigProcess = Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -PassThru
+        # If the signature script takes too long, move on automatically
+        $sigProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+        if (!$sigProcess.HasExited) {
+            Write-Warning "Signature script is taking too long, proceeding to next steps..."
+        }
+        else {
+            Write-Success "Email Signature script finished."
+        }
     }
     else {
         Write-ErrorMsg "VBS script $SigVbsName not found inside zip."
@@ -257,52 +257,45 @@ switch ($BrandChoice) {
     Default { Write-Step "Skipping system-specific tool installation." }
 }
 
-# --- WhatsApp (Local) ---
-Write-Step "Installing WhatsApp from local file..."
-$WhatsAppExe = Join-Path $InstallersDir "WhatsApp.exe"
-if (Test-Path $WhatsAppExe) {
-    Start-Process -FilePath $WhatsAppExe -ArgumentList "/S" -Wait
-    Write-Success "WhatsApp installation triggered."
+# --- WhatsApp (Winget) ---
+Write-Step "Installing WhatsApp via Winget..."
+winget install WhatsApp.WhatsApp --silent --accept-package-agreements --accept-source-agreements
+if ($LASTEXITCODE -eq 0) {
+    Write-Success "WhatsApp installation via Winget finished."
 }
 else {
-    Write-ErrorMsg "WhatsApp installer not found at $WhatsAppExe"
+    Write-ErrorMsg "WhatsApp installation via Winget failed or was already present."
 }
 
 # --- Printer Installation (Follow Me via Print Server) ---
-Write-Step "Installing 'Follow Me' printer from print server..."
+Write-Step "Installing 'Follow Me' printer using printui.dll..."
 
-$PrintServer = "10.58.197.197"
-$ShareName = "FollowMe"
-$Connection = "\\$PrintServer\$ShareName"
+$PrinterPath = "\\10.58.197.197\FollowMe"
 
 try {
-    # Check if printer already exists
-    if (Get-Printer -Name $ShareName -ErrorAction SilentlyContinue) {
-        Write-Host "Printer '$ShareName' already installed."
-        return
-    }
-
-    Write-Host "Connecting to shared printer $Connection ..."
-    Add-Printer -ConnectionName $Connection -ErrorAction Stop
-
-    Write-Success "Printer '$ShareName' installed successfully from $PrintServer."
-
-    # Give spooler a moment to fully register the printer
-    Start-Sleep -Seconds 3
+    # Force the connection using the Windows shell handler as the logged-in user (non-admin)
+    # We use explorer.exe to spawn a non-elevated process from this elevated one.
+    Write-Host "Triggering printer connection for $PrinterPath ..."
+    Start-Process "explorer.exe" -ArgumentList "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`"" -Wait
     
-    # Send test page
-    $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%$ShareName%'"
+    Write-Success "Printer connection triggered via printui.dll."
+
+    # Give it a moment to register in the user session
+    Start-Sleep -Seconds 5
+    
+    # Send test page (Note: Invoke-CimMethod might fail if run as Admin on a per-user printer, 
+    # but we attempt it anyway for verification).
+    $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%FollowMe%'"
     if ($cim) {
         Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
-        Write-Success "Test page sent to '$ShareName'."
+        Write-Success "Test page sent to 'FollowMe'."
     }
     else {
-        Write-ErrorMsg "Printer CIM object not found for test page."
+        Write-Warning "Printer object not found in current CIM scope. It may still be installing in the user session."
     }
-
 }
 catch {
-    Write-ErrorMsg "Follow Me printer setup failed: $($_.Exception.Message)"
+    Write-ErrorMsg "Printer setup failed: $($_.Exception.Message)"
 }
 
 

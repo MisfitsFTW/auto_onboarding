@@ -93,6 +93,10 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 $ScriptDir = $PSScriptRoot
 $InstallersDir = Join-Path $ScriptDir "Installers"
 
+# Detect the current interactive user for per-user mappings (WhatsApp, Printer, Registry)
+$LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
+Write-Host "Detected Interactive User: $LoggedUser" -ForegroundColor Yellow
+
 # --- User Data Collection ---
 
 Write-Host "==========================================" -ForegroundColor Green
@@ -196,17 +200,16 @@ else {
 }
 
 
-# --- 5. 7-Zip & 6. VLC (Winget) ---
-Write-Step "Installing Utilities (7-Zip, VLC)..."
+# --- 5. 7-Zip & 6. VLC (Admin Context) ---
+Write-Step "Installing 7-Zip..."
 $ZipExe = Join-Path $InstallersDir "7z.exe"
-
 if (Test-Path $ZipExe) {
     Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
-    Write-Success "7-Zip installation triggered."
+    Write-Success "7-Zip installation finished."
 }
-else { Write-ErrorMsg "7z.exe not found." }
+else { Write-ErrorMsg "7z.exe not found at $ZipExe" }
 
-Write-Step "Installing VLC via Winget..."
+Write-Step "Installing VLC via Winget (Admin)..."
 winget install VideoLAN.VLC --silent --accept-package-agreements --accept-source-agreements
 if ($LASTEXITCODE -eq 0) {
     Write-Success "VLC installation via Winget finished."
@@ -257,23 +260,43 @@ switch ($BrandChoice) {
     Default { Write-Step "Skipping system-specific tool installation." }
 }
 
-# --- WhatsApp (Winget) ---
-Write-Step "Installing WhatsApp via Winget..."
-winget install WhatsApp.WhatsApp --silent --accept-package-agreements --accept-source-agreements
-if ($LASTEXITCODE -eq 0) {
-    Write-Success "WhatsApp installation via Winget finished."
+# --- WhatsApp (Winget - User Context) ---
+Write-Step "Installing WhatsApp via Winget in $LoggedUser's context..."
+
+if ($LoggedUser) {
+    $TaskName = "WhatsAppInstall_$(Get-Random)"
+    $V1 = "WhatsApp.WhatsApp"
+    $V2 = "WhatsApp"
+    $WingetArgs = "--silent --accept-package-agreements --accept-source-agreements"
+    
+    # Combined command with fallback logic
+    $UserCommand = "winget install $V1 $WingetArgs; if (`$LASTEXITCODE -ne 0) { winget install `"$V2`" $WingetArgs }"
+    
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$UserCommand`""
+    $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+    
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        
+        Write-Success "WhatsApp installation triggered in $LoggedUser's profile."
+        
+        # Give winget time to finish before cleaning up task
+        Start-Sleep -Seconds 30
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+    catch {
+        Write-ErrorMsg "Failed to trigger user-context WhatsApp install: $($_.Exception.Message)"
+    }
 }
 else {
-    Write-ErrorMsg "WhatsApp installation via Winget failed or was already present."
+    Write-ErrorMsg "No interactive user detected. WhatsApp install skipped."
 }
 
 # --- Printer Installation (Follow Me via Print Server) ---
 Write-Step "Installing 'Follow Me' printer (User Context)..."
 $PrinterPath = "\\10.58.197.197\FollowMe"
 $TaskName = "PrinterMap_$(Get-Random)"
-
-# Detect the current interactive user
-$LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
 
 if ($LoggedUser) {
     Write-Host "Detected Interactive User: $LoggedUser"
@@ -362,7 +385,6 @@ powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1
 powercfg /setactive SCHEME_CURRENT
 
 # 2. User-specific Registry Settings (Clock Format)
-$LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
 if ($LoggedUser) {
     Write-Host "Applying user-specific settings for $LoggedUser..."
     $TaskName = "UserFinalize_$(Get-Random)"

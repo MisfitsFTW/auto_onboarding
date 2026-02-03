@@ -1,12 +1,11 @@
 <#
 .SYNOPSIS
-    PC Onboarding Automation Script (Revised)
+    PC Onboarding Automation Script (Refactored to Menu)
 .DESCRIPTION
-    v2.0 - Improved reliability for Taskbar, Default Apps, Network, and Printer.
-    Added WhatsApp installation via winget.
+    v3.0 - Modular menu-driven onboarding system.
 #>
 
-# --- Core Functions ---
+# --- Core Functions & Initialization ---
 
 $LogDir = Join-Path $PSScriptRoot "logs"
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
@@ -36,16 +35,31 @@ function Write-ErrorMsg {
     Log-Message "ERROR" $Message
 }
 
-function Connect-Wifi {
-    param($SSID, $Password)
-    Write-Step "Configuring WiFi Profile for $SSID..."
+# --- Initialization ---
+
+# Check for Admin Privileges
+if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-ErrorMsg "Script must be run as Administrator."
+    pause
+    exit
+}
+
+$ScriptDir = $PSScriptRoot
+$InstallersDir = Join-Path $ScriptDir "Installers"
+$WifiSSID = "BARRIERA"
+$WifiPass = "MeSD05o818"
+
+# --- Setup Step Functions ---
+
+function Step-WiFi {
+    Write-Step "Configuring WiFi Profile for $WifiSSID..."
     $ProfileXml = @"
 <?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-    <name>$SSID</name>
+    <name>$WifiSSID</name>
     <SSIDConfig>
         <SSID>
-            <name>$SSID</name>
+            <name>$WifiSSID</name>
         </SSID>
     </SSIDConfig>
     <connectionType>ESS</connectionType>
@@ -60,7 +74,7 @@ function Connect-Wifi {
             <sharedKey>
                 <keyType>passPhrase</keyType>
                 <protected>false</protected>
-                <keyMaterial>$Password</keyMaterial>
+                <keyMaterial>$WifiPass</keyMaterial>
             </sharedKey>
         </security>
     </MSM>
@@ -69,297 +83,245 @@ function Connect-Wifi {
     $Path = "$env:TEMP\wifi.xml"
     $ProfileXml | Out-File $Path
     netsh wlan add profile filename=$Path | Out-Null
-    netsh wlan connect name=$SSID | Out-Null
+    netsh wlan connect name=$WifiSSID | Out-Null
     
-    # Wait for connection and verify
     Start-Sleep -Seconds 5
-    $WifiCheck = netsh wlan show profile name=$SSID | Select-String "SSID name"
+    $WifiCheck = netsh wlan show profile name=$WifiSSID | Select-String "SSID name"
     if ($WifiCheck) {
-        Write-Success "WiFi Profile '$SSID' successfully added/verified."
+        Write-Success "WiFi Profile '$WifiSSID' successfully added/verified."
     }
     else {
-        Write-ErrorMsg "WiFi Profile '$SSID' was NOT found after import."
+        Write-ErrorMsg "WiFi Profile '$WifiSSID' was NOT found after import."
     }
 }
 
-# --- Initialization ---
+function Step-Office {
+    $InstallChoice = Read-Host "Install Office 365? (Yes/No)"
+    if ($InstallChoice -match "^y") {
+        # Collect credentials
+        $UserEmail = Read-Host "Enter User Email address"
+        $SecurePassword = Read-Host "Enter User Password" -AsSecureString
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+        $UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 
-# Check for Admin Privileges
-if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-ErrorMsg "Script must be run as Administrator."
-    exit
-}
+        Write-Step "Installing Office 365 (this may take several minutes)..."
+        $OfficeSetup = Join-Path $InstallersDir "Office\setup.exe"
+        $OfficeConfig = Join-Path $InstallersDir "Office\configuration.xml"
 
-$ScriptDir = $PSScriptRoot
-$InstallersDir = Join-Path $ScriptDir "Installers"
-
-# --- User Data Collection ---
-
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host "   PC ONBOARDING AUTOMATION SYSTEM v2.0   " -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Green
-
-
-
-$WifiSSID = "BARRIERA"
-$WifiPass = "MeSD05o818"
-
-$InstallOffice = Read-Host "Install Office 365? (Yes/No)"
-
-# --- 1. Install Office 365 ---
-if ($InstallOffice -eq "Yes" -or $InstallOffice -eq "y") {
-    # Collect credentials only when needed
-    $UserEmail = Read-Host "Enter User Email address"
-    $SecurePassword = Read-Host "Enter User Password" -AsSecureString
-    # Convert SecureString to plain text for use in script
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-    $UserPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-
-    Write-Step "Installing Office 365 (this may take several minutes)..."
-    $OfficeSetup = Join-Path $InstallersDir "Office\setup.exe"
-    $OfficeConfig = Join-Path $InstallersDir "Office\configuration.xml"
-
-    if (Test-Path $OfficeSetup) {
-        Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -Wait
-        Write-Success "Office 365 installation finished."
-    }
-    else {
-        Write-ErrorMsg "Office Setup not found at $OfficeSetup"
-    }
-}
-else {
-    Write-Step "Skipping Office 365 installation as requested."
-}
-
-# --- 2. Brand Selection (UI) ---
-Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
-Write-Host "1. HP (HP Support Assistant)"
-Write-Host "2. Dell (Dell Command Centre)"
-Write-Host "3. ASUS (MyASUS)"
-Write-Host "4. Skip / Other"
-$BrandChoice = Read-Host "Enter Choice (1-4)"
-
-# --- 3. Email Signature (VBS from Zip) ---
-Write-Step "Configuring Email Signature..."
-$SigZip = Join-Path $InstallersDir "SignatureSetup.zip"
-$SigTemp = Join-Path $env:TEMP "SignatureSetup"
-$SigVbsName = "Gov_Corporate_Email_Signature.vbs"
-
-if (Test-Path $SigZip) {
-    if (Test-Path $SigTemp) { Remove-Item $SigTemp -Recurse -Force }
-    Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
-    $VbsPath = Join-Path $SigTemp $SigVbsName
-    if (Test-Path $VbsPath) {
-        Write-Step "Executing Email Signature script (waiting max 30s)..."
-        $sigProcess = Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -PassThru
-        # If the signature script takes too long, move on automatically
-        $sigProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
-        if (!$sigProcess.HasExited) {
-            Write-Warning "Signature script is taking too long, proceeding to next steps..."
+        if (Test-Path $OfficeSetup) {
+            Start-Process -FilePath $OfficeSetup -ArgumentList "/configure `"$OfficeConfig`"" -Wait
+            Write-Success "Office 365 installation finished."
         }
         else {
-            Write-Success "Email Signature script finished."
+            Write-ErrorMsg "Office Setup not found at $OfficeSetup"
         }
     }
     else {
-        Write-ErrorMsg "VBS script $SigVbsName not found inside zip."
+        Write-Step "Skipping Office 365 installation."
     }
 }
 
-# --- 4. VPN Automated Download & Install ---
-Write-Step "Handling VPN Installation..."
-$VpnFileName = "FortiClientVPNSetup_7.2.12.1269_x64.exe"
-$VpnLocalPath = Join-Path $InstallersDir $VpnFileName
-$VpnDownloadUrl = "https://vpn.mita.gov.mt/Software/FortiClient%20VPN%20for%20Windows/$VpnFileName"
-
-if (!(Test-Path $VpnLocalPath)) {
-    Write-Host "VPN Installer not found locally. Attempting to download specific version from portal..." -ForegroundColor Yellow
-    try {
-        Invoke-WebRequest -Uri $VpnDownloadUrl -OutFile $VpnLocalPath -ErrorAction Stop
-        Write-Success "VPN Installer downloaded successfully."
+function Step-Utilities {
+    Write-Step "Installing Utilities (7-Zip, VLC, WhatsApp)..."
+    
+    # 7-Zip
+    $ZipExe = Join-Path $InstallersDir "7z.exe"
+    if (Test-Path $ZipExe) {
+        Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
+        Write-Success "7-Zip installation completed."
     }
-    catch {
-        Write-Warning "Failed to download VPN installer from $VpnDownloadUrl. Proceeding with local install if possible."
-    }
+
+    # VLC
+    Write-Step "Installing VLC via Winget..."
+    winget install VideoLAN.VLC --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -eq 0) { Write-Success "VLC installed." }
+
+    # WhatsApp
+    Write-Step "Installing WhatsApp via Winget..."
+    winget install WhatsApp.WhatsApp --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -eq 0) { Write-Success "WhatsApp installed." }
 }
 
-$VpnToInstall = Get-ChildItem -Path $InstallersDir -Filter "FortiClientVPNSetup*.exe" | Select-Object -First 1
-if ($VpnToInstall) {
-    Write-Step "Installing VPN ($($VpnToInstall.Name))..."
-    # Using /quiet /norestart for reliable silent installation
-    Start-Process -FilePath $VpnToInstall.FullName -ArgumentList "/quiet /norestart" -Wait
-    Write-Success "VPN installation command executed."
-}
-else {
-    Write-ErrorMsg "No VPN installer (FortiClientVPNSetup*.exe) found."
-}
+function Step-VPN {
+    Write-Step "Handling VPN Installation..."
+    $VpnFileName = "FortiClientVPNSetup_7.2.12.1269_x64.exe"
+    $VpnLocalPath = Join-Path $InstallersDir $VpnFileName
+    $VpnDownloadUrl = "https://vpn.mita.gov.mt/Software/FortiClient%20VPN%20for%20Windows/$VpnFileName"
 
-
-# --- 5. 7-Zip & 6. VLC (Winget) ---
-Write-Step "Installing Utilities (7-Zip, VLC)..."
-$ZipExe = Join-Path $InstallersDir "7z.exe"
-
-if (Test-Path $ZipExe) {
-    Start-Process -FilePath $ZipExe -ArgumentList "/S" -Wait
-    Write-Success "7-Zip installation triggered."
-}
-else { Write-ErrorMsg "7z.exe not found." }
-
-Write-Step "Installing VLC via Winget..."
-winget install VideoLAN.VLC --silent --accept-package-agreements --accept-source-agreements
-if ($LASTEXITCODE -eq 0) {
-    Write-Success "VLC installation via Winget finished."
-}
-else {
-    Write-ErrorMsg "VLC installation via Winget failed or was already present."
-}
-
-# --- 7. Windows Updates ---
-Write-Step "Triggering Windows Updates..."
-Start-Process -FilePath "usoclient" -ArgumentList "StartInteractiveScan"
-
-# --- 8. Brand Specific System Tools ---
-Write-Step "Installing System Specific Software..."
-switch ($BrandChoice) {
-    "1" {
-        $HpExe = Join-Path $InstallersDir "HPSupportAssistant.exe"
-        if (Test-Path $HpExe) {
-            # Based on the usage message: /s /f <target>
-            $HpTarget = "$env:TEMP\HPSupportAssistant"
-            Start-Process -FilePath $HpExe -ArgumentList "/s /f `"$HpTarget`"" -Wait
-            Write-Success "HP Support Assistant extraction/install triggered."
+    if (!(Test-Path $VpnLocalPath)) {
+        Write-Host "Downloading VPN Installer..." -ForegroundColor Yellow
+        try {
+            Invoke-WebRequest -Uri $VpnDownloadUrl -OutFile $VpnLocalPath -ErrorAction Stop
+            Write-Success "VPN downloaded."
         }
-        else {
-            Write-ErrorMsg "HP Support Assistant installer not found at $HpExe"
+        catch {
+            Write-Warning "VPN download failed."
         }
     }
-    "2" {
-        $DellExe = Join-Path $InstallersDir "DellCommandCentre.exe"
-        if (Test-Path $DellExe) {
-            Start-Process -FilePath $DellExe -ArgumentList "/S" -Wait
-            Write-Success "Dell Command Centre installation triggered."
+
+    $VpnToInstall = Get-ChildItem -Path $InstallersDir -Filter "FortiClientVPNSetup*.exe" | Select-Object -First 1
+    if ($VpnToInstall) {
+        Write-Step "Installing VPN..."
+        Start-Process -FilePath $VpnToInstall.FullName -ArgumentList "/quiet /norestart" -Wait
+        Write-Success "VPN installed."
+    }
+}
+
+function Step-BrandTools {
+    Write-Host "`nSelect Laptop Brand:" -ForegroundColor Yellow
+    Write-Host "1. HP (HP Support Assistant)"
+    Write-Host "2. Dell (Dell Command Centre)"
+    Write-Host "3. ASUS (MyASUS)"
+    Write-Host "4. Skip"
+    $Choice = Read-Host "Enter Choice (1-4)"
+
+    switch ($Choice) {
+        "1" {
+            $HpExe = Join-Path $InstallersDir "HPSupportAssistant.exe"
+            if (Test-Path $HpExe) {
+                Start-Process -FilePath $HpExe -ArgumentList "/s /f `"$env:TEMP\HPSupportAssistant`"" -Wait
+                Write-Success "HP tools installed."
+            }
         }
-        else {
-            Write-ErrorMsg "Dell Command Centre installer not found at $DellExe"
+        "2" {
+            $DellExe = Join-Path $InstallersDir "DellCommandCentre.exe"
+            if (Test-Path $DellExe) {
+                Start-Process -FilePath $DellExe -ArgumentList "/S" -Wait
+                Write-Success "Dell tools installed."
+            }
+        }
+        "3" {
+            $AsusExe = Join-Path $InstallersDir "MyASUS.exe"
+            if (Test-Path $AsusExe) {
+                Start-Process -FilePath $AsusExe -ArgumentList "/S" -Wait
+                Write-Success "ASUS tools installed."
+            }
         }
     }
-    "3" {
-        $AsusExe = Join-Path $InstallersDir "MyASUS.exe"
-        if (Test-Path $AsusExe) {
-            Start-Process -FilePath $AsusExe -ArgumentList "/S" -Wait
-            Write-Success "MyASUS installation triggered."
-        }
-        else {
-            Write-ErrorMsg "MyASUS installer not found at $AsusExe"
+}
+
+function Step-Signature {
+    Write-Step "Configuring Email Signature..."
+    $SigZip = Join-Path $InstallersDir "SignatureSetup.zip"
+    $SigTemp = Join-Path $env:TEMP "SignatureSetup"
+
+    if (Test-Path $SigZip) {
+        if (Test-Path $SigTemp) { Remove-Item $SigTemp -Recurse -Force }
+        Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
+        $VbsPath = Join-Path $SigTemp "Gov_Corporate_Email_Signature.vbs"
+        if (Test-Path $VbsPath) {
+            Write-Step "Executing Signature script (30s timeout)..."
+            $sigProc = Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -PassThru
+            $sigProc | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+            Write-Success "Signature step processed."
         }
     }
-    Default { Write-Step "Skipping system-specific tool installation." }
 }
 
-# --- WhatsApp (Winget) ---
-Write-Step "Installing WhatsApp via Winget..."
-winget install WhatsApp.WhatsApp --silent --accept-package-agreements --accept-source-agreements
-if ($LASTEXITCODE -eq 0) {
-    Write-Success "WhatsApp installation via Winget finished."
-}
-else {
-    Write-ErrorMsg "WhatsApp installation via Winget failed or was already present."
-}
-
-# --- Printer Installation (Follow Me via Print Server) ---
-Write-Step "Installing 'Follow Me' printer using printui.dll..."
-
-$PrinterPath = "\\10.58.197.197\FollowMe"
-
-try {
-    # Force the connection using the Windows shell handler as the logged-in user (non-admin)
-    # We use explorer.exe to spawn a non-elevated process from this elevated one.
-    Write-Host "Triggering printer connection for $PrinterPath ..."
+function Step-Printer {
+    Write-Step "Installing 'Follow Me' printer (Non-admin context)..."
+    $PrinterPath = "\\10.58.197.197\FollowMe"
+    Write-Host "Triggering connection for $PrinterPath ..."
     Start-Process "explorer.exe" -ArgumentList "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`"" -Wait
-    
-    Write-Success "Printer connection triggered via printui.dll."
-
-    # Give it a moment to register in the user session
+    Write-Success "Printer connection triggered."
     Start-Sleep -Seconds 5
-    
-    # Send test page (Note: Invoke-CimMethod might fail if run as Admin on a per-user printer, 
-    # but we attempt it anyway for verification).
     $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%FollowMe%'"
     if ($cim) {
         Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
-        Write-Success "Test page sent to 'FollowMe'."
-    }
-    else {
-        Write-Warning "Printer object not found in current CIM scope. It may still be installing in the user session."
+        Write-Success "Test page sent."
     }
 }
-catch {
-    Write-ErrorMsg "Printer setup failed: $($_.Exception.Message)"
-}
 
-
-
-# --- 14. Ethernet/WiFi Check & GPUpdate ---
-Write-Step "Running gpupdate /force..."
-$Connection = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
-if ($Connection) {
-    # Use Start-Process with a timeout to prevent hanging
-    $gpProcess = Start-Process "gpupdate.exe" -ArgumentList "/force" -PassThru -NoNewWindow
-    $gpProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
-    if (!$gpProcess.HasExited) {
-        Write-Warning "GPUpdate is taking too long, continuing to next steps..."
+function Step-Maintenance {
+    Write-Step "Running Maintenance (GPUpdate, WU Trigger)..."
+    $Connection = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+    if ($Connection) {
+        $gp = Start-Process "gpupdate.exe" -ArgumentList "/force" -PassThru -NoNewWindow
+        $gp | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+        Write-Success "GPUpdate triggered."
     }
-    else {
-        Write-Success "GPUpdate completed."
+    Start-Process -FilePath "usoclient" -ArgumentList "StartInteractiveScan"
+    Write-Success "Windows Updates scan triggered."
+}
+
+function Step-ConfigMgr {
+    Write-Step "Triggering Configuration Manager Actions..."
+    if (Get-Service -Name "CcmExec" -ErrorAction SilentlyContinue) {
+        try {
+            $SmsClient = [wmiclass]"\\.\root\ccm:SMS_Client"
+            $Actions = @("{00000000-0000-0000-0000-000000000001}", "{00000000-0000-0000-0000-000000000002}", "{00000000-0000-0000-0000-000000000021}")
+            foreach ($Action in $Actions) { $SmsClient.TriggerSchedule($Action) | Out-Null }
+            Write-Success "ConfigMgr actions triggered."
+        }
+        catch { Write-ErrorMsg "Failed to trigger ConfigMgr." }
     }
 }
-else {
-    Write-ErrorMsg "No active network connection found! GPUpdate skipped."
+
+function Step-Finalize {
+    Write-Step "Finalizing (OneDrive, Teams, Power/Clock)..."
+    $OneDrivePath = "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
+    if (Test-Path $OneDrivePath) { Start-Process $OneDrivePath } else { Start-Process "OneDrive.exe" -ErrorAction SilentlyContinue }
+    Start-Process "ms-teams.exe" -ErrorAction SilentlyContinue
+
+    powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+    powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1
+    powercfg /setactive SCHEME_CURRENT
+
+    $RegPath = "HKCU:\Control Panel\International"
+    Set-ItemProperty -Path $RegPath -Name sShortTime -Value "h:mm tt"
+    Set-ItemProperty -Path $RegPath -Name sTimeFormat -Value "h:mm:ss tt"
+    & rundll32.exe user32.dll, UpdatePerUserSystemParameters
+    Write-Success "System settings applied."
 }
 
-# --- 15. Configuration Manager Actions ---
-Write-Step "Triggering Configuration Manager Actions..."
-if (Get-Service -Name "CcmExec" -ErrorAction SilentlyContinue) {
-    try {
-        $SmsClient = [wmiclass]"\\.\root\ccm:SMS_Client"
-        $Actions = @("{00000000-0000-0000-0000-000000000001}", "{00000000-0000-0000-0000-000000000002}", "{00000000-0000-0000-0000-000000000021}")
-        foreach ($Action in $Actions) { $SmsClient.TriggerSchedule($Action) | Out-Null }
-        Write-Success "ConfigMgr actions triggered."
+# --- Main Menu Loop ---
+
+$Continue = $true
+while ($Continue) {
+    Clear-Host
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "   PC ONBOARDING INTERACTIVE MENU v3.0  " -ForegroundColor Green
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "1.  Connect to WiFi ($WifiSSID)"
+    Write-Host "2.  Install Office 365"
+    Write-Host "3.  Install Utilities (7-Zip, VLC, WhatsApp)"
+    Write-Host "4.  Download & Install VPN"
+    Write-Host "5.  Install Brand Specific Tools"
+    Write-Host "6.  Configure Email Signature"
+    Write-Host "7.  Install 'Follow Me' Printer"
+    Write-Host "8.  Run GPUpdate & Windows Update scan"
+    Write-Host "9.  Trigger ConfigMgr Actions"
+    Write-Host "10. Finalize (OneDrive, Teams, Power, Clock)"
+    Write-Host "A.  Run ALL Steps Sequentially"
+    Write-Host "X.  Exit"
+    Write-Host ""
+
+    $Selection = Read-Host "Select an option"
+
+    switch ($Selection) {
+        "1" { Step-WiFi }
+        "2" { Step-Office }
+        "3" { Step-Utilities }
+        "4" { Step-VPN }
+        "5" { Step-BrandTools }
+        "6" { Step-Signature }
+        "7" { Step-Printer }
+        "8" { Step-Maintenance }
+        "9" { Step-ConfigMgr }
+        "10" { Step-Finalize }
+        "A" { 
+            Step-WiFi; Step-Office; Step-Utilities; Step-VPN; 
+            Step-BrandTools; Step-Signature; Step-Printer; 
+            Step-Maintenance; Step-ConfigMgr; Step-Finalize 
+        }
+        "X" { $Continue = $false; Write-Host "Exiting..." }
+        Default { Write-Host "Invalid Selection. Please try again." -ForegroundColor Yellow }
     }
-    catch { Write-ErrorMsg "Failed to trigger ConfigMgr actions." }
+
+    if ($Continue -and ($Selection -ne "X")) {
+        Write-Host "`nStep(s) completed. Press Enter to return to menu..."
+        Read-Host
+    }
 }
-else {
-    Write-ErrorMsg "Configuration Manager client not found."
-}
-
-# --- 17. WiFi Connection ---
-Write-Step "Configuring WiFi Profile for $WifiSSID ..."
-Connect-Wifi -SSID $WifiSSID -Password $WifiPass
-
-# --- Final Manual Steps ---
-Write-Host "`nLaunching Apps for Manual Sign-in..." -ForegroundColor Yellow
-# Using full paths or standard names for OneDrive/Teams
-$OneDrivePath = "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
-if (Test-Path $OneDrivePath) { Start-Process $OneDrivePath } else { Start-Process "OneDrive.exe" -ErrorAction SilentlyContinue }
-
-$TeamsPath = "$env:LOCALAPPDATA\Microsoft\Teams\current\Teams.exe"
-if (Test-Path $TeamsPath) { Start-Process $TeamsPath } else { Start-Process "ms-teams.exe" -ErrorAction SilentlyContinue }
-
-# --- Power & Clock ---
-Write-Step "Setting Power Options & Clock..."
-# Lid actions
-powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
-powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1
-powercfg /setactive SCHEME_CURRENT
-
-# Clock format (12-hour)
-$RegPath = "HKCU:\Control Panel\International"
-Set-ItemProperty -Path $RegPath -Name sShortTime -Value "h:mm tt"
-Set-ItemProperty -Path $RegPath -Name sTimeFormat -Value "h:mm:ss tt"
-# Force refresh
-& rundll32.exe user32.dll, UpdatePerUserSystemParameters
-
-Write-Host "`nSETUP FINISHED!" -ForegroundColor Cyan
-Write-Host "Please check Taskbar and Defaults after logging off/in." -ForegroundColor Yellow
-pause

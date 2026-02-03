@@ -229,11 +229,12 @@ function Step-Printer {
 
     if ($LoggedUser) {
         Write-Host "Detected Interactive User: $LoggedUser"
-        Write-Host "Triggering connection for $PrinterPath via Scheduled Task..."
+        Write-Host "Triggering connection and test page for $PrinterPath via Scheduled Task..."
         
         try {
-            # Define the action
-            $Action = New-ScheduledTaskAction -Execute "rundll32.exe" -Argument "printui.dll,PrintUIEntry /in /n `"$PrinterPath`""
+            # Define the action: Map printer (/in), Set Default (/y), then trigger test page (/k)
+            $UserCommand = "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`" /q; Start-Sleep -s 5; rundll32.exe printui.dll,PrintUIEntry /y /n `"$PrinterPath`"; rundll32.exe printui.dll,PrintUIEntry /k /n `"$PrinterPath`""
+            $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$UserCommand`""
             
             # Define the principal (Run as the logged-in user, interactive)
             $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
@@ -242,10 +243,10 @@ function Step-Printer {
             Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
             Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
             
-            Write-Success "Printer mapping triggered in $LoggedUser's profile."
+            Write-Success "Printer mapping and test page triggered in $LoggedUser's profile."
             
-            # Give it some time to process before cleanup
-            Start-Sleep -Seconds 10
+            # Give it time to process before cleanup
+            Start-Sleep -Seconds 15
             Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
         }
         catch {
@@ -254,14 +255,6 @@ function Step-Printer {
     }
     else {
         Write-ErrorMsg "No interactive user detected. Ensure you are logged in to the desktop."
-    }
-
-    # Optional test page (System context might not see per-user printer immediately)
-    Start-Sleep -Seconds 5
-    $cim = Get-CimInstance Win32_Printer -Filter "Name LIKE '%FollowMe%'"
-    if ($cim) {
-        Invoke-CimMethod -InputObject $cim -MethodName PrintTestPage | Out-Null
-        Write-Success "Test page sent."
     }
 }
 
@@ -291,20 +284,43 @@ function Step-ConfigMgr {
 }
 
 function Step-Finalize {
-    Write-Step "Finalizing (OneDrive, Teams, Power/Clock)..."
-    $OneDrivePath = "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
-    if (Test-Path $OneDrivePath) { Start-Process $OneDrivePath } else { Start-Process "OneDrive.exe" -ErrorAction SilentlyContinue }
-    Start-Process "ms-teams.exe" -ErrorAction SilentlyContinue
-
+    Write-Step "Finalizing (Power/Clock)..."
+    
+    # 1. Power Settings (System-wide, Admin ok)
     powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
     powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1
     powercfg /setactive SCHEME_CURRENT
 
-    $RegPath = "HKCU:\Control Panel\International"
-    Set-ItemProperty -Path $RegPath -Name sShortTime -Value "h:mm tt"
-    Set-ItemProperty -Path $RegPath -Name sTimeFormat -Value "h:mm:ss tt"
-    & rundll32.exe user32.dll, UpdatePerUserSystemParameters
-    Write-Success "System settings applied."
+    # 2. User-specific Registry Settings (Clock Format)
+    $LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
+    if ($LoggedUser) {
+        Write-Host "Applying user-specific settings for $LoggedUser..."
+        $TaskName = "UserFinalize_$(Get-Random)"
+        
+        # Build the registry and refresh command
+        $RegCmd = "Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name sShortTime -Value 'h:mm tt'; " +
+        "Set-ItemProperty -Path 'HKCU:\Control Panel\International' -Name sTimeFormat -Value 'h:mm:ss tt'; " +
+        "& rundll32.exe user32.dll, UpdatePerUserSystemParameters"
+        
+        $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$RegCmd`""
+        $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+        
+        try {
+            Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            Write-Success "Clock settings triggered in $LoggedUser's profile. Kindly restart your computer to see the changes."
+            Start-Sleep -Seconds 5
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        }
+        catch {
+            Write-ErrorMsg "Failed to apply user settings: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-ErrorMsg "No interactive user detected for registry settings."
+    }
+
+    Write-Success "Finalization step completed."
 }
 
 # --- Main Menu Loop ---
@@ -325,7 +341,7 @@ while ($Continue) {
     Write-Host "7.  Install 'Follow Me' Printer"
     Write-Host "8.  Run GPUpdate & Windows Update scan"
     Write-Host "9.  Trigger ConfigMgr Actions"
-    Write-Host "10. Finalize (OneDrive, Teams, Power, Clock)"
+    Write-Host "10. Finalize (Power, Clock)"
     Write-Host "A.  Run ALL Steps Sequentially"
     Write-Host "X.  Exit"
     Write-Host ""

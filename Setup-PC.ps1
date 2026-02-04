@@ -209,13 +209,16 @@ if (Test-Path $ZipExe) {
 }
 else { Write-ErrorMsg "7z.exe not found at $ZipExe" }
 
-Write-Step "Installing VLC via Winget (Admin)..."
-winget install VideoLAN.VLC --silent --accept-package-agreements --accept-source-agreements
-if ($LASTEXITCODE -eq 0) {
-    Write-Success "VLC installation via Winget finished."
-}
+# --- 6. VLC (Local Installer from Installers Folder) ---
+$VlcInstaller = Get-ChildItem -Path $InstallersDir -Filter "vlc-*.exe" | Select-Object -First 1
+
+if ($VlcInstaller) {
+    Write-Step "Found VLC installer: $($VlcInstaller.Name). Installing silently..."
+    Start-Process -FilePath $VlcInstaller.FullName -ArgumentList "/S" -Wait
+    Write-Success "VLC has been installed successfully."
+} 
 else {
-    Write-ErrorMsg "VLC installation via Winget failed or was already present."
+    Write-ErrorMsg "Could not find any VLC installer (vlc-*.exe) in $InstallersDir."
 }
 
 # --- 7. Windows Updates ---

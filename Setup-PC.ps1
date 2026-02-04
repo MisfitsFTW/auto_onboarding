@@ -371,13 +371,7 @@ Write-Step "Configuring WiFi Profile for $WifiSSID ..."
 Connect-Wifi -SSID $WifiSSID -Password $WifiPass
 
 # --- Final Manual Steps ---
-Write-Host "`nLaunching Apps for Manual Sign-in..." -ForegroundColor Yellow
-# Using full paths or standard names for OneDrive/Teams
-$OneDrivePath = "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
-if (Test-Path $OneDrivePath) { Start-Process $OneDrivePath } else { Start-Process "OneDrive.exe" -ErrorAction SilentlyContinue }
-
-$TeamsPath = "$env:LOCALAPPDATA\Microsoft\Teams\current\Teams.exe"
-if (Test-Path $TeamsPath) { Start-Process $TeamsPath } else { Start-Process "ms-teams.exe" -ErrorAction SilentlyContinue }
+Write-Host "`nMANUAL ACTION REQUIRED: Please sign in to OneDrive and Teams manually." -ForegroundColor Yellow
 
 # --- Power & Clock ---
 Write-Step "Setting Power Options & Clock..."
@@ -415,5 +409,25 @@ else {
     Write-ErrorMsg "No interactive user detected for registry settings."
 }
 
-Write-Success "Finalization step completed."
+Write-Success "Automation steps completed."
+
+# --- Final Summary & Manual Checklist ---
+Write-Host "`n"
+Write-Host "==========================================================" -ForegroundColor White -BackgroundColor Blue
+Write-Host "                FINAL MANUAL CHECKLIST                    " -ForegroundColor White -BackgroundColor Blue
+Write-Host "==========================================================" -ForegroundColor White -BackgroundColor Blue
+Write-Host " Please manually confirm each of the following:          " -ForegroundColor Yellow
+Write-Host ""
+Write-Host " [ ] Install WhatsApp (Manual EXE/Store)" -ForegroundColor Green
+Write-Host " [ ] Configure Taskbar Shortcuts" -ForegroundColor Green
+Write-Host " [ ] Set Default Applications" -ForegroundColor Green
+Write-Host " [ ] Test Microsoft Teams (Call/Video)" -ForegroundColor Green
+Write-Host " [ ] Test Remote Control (Support)" -ForegroundColor Green
+Write-Host " [ ] Set up & Sign in to OneDrive" -ForegroundColor Green
+Write-Host ""
+Write-Host " IMPORTANT: Verify all automated steps (Office, WiFi, VPN, etc.)"
+Write-Host " are functioning correctly before handing over the PC.  " -ForegroundColor Yellow
+Write-Host "==========================================================" -ForegroundColor White -BackgroundColor Blue
+Write-Host "`nScript finished. Press Enter to exit..."
+Read-Host
 

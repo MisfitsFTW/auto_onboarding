@@ -107,6 +107,7 @@ Write-Host "==========================================" -ForegroundColor Green
 
 $WifiSSID = "BARRIERA"
 $WifiPass = "MeSD05o818"
+$SetupWifi = Read-Host "Setup BARRIERA Wi-Fi? (Yes/No)"
 
 $InstallOffice = Read-Host "Install Office 365? (Yes/No)"
 
@@ -367,8 +368,13 @@ else {
 }
 
 # --- 17. WiFi Connection ---
-Write-Step "Configuring WiFi Profile for $WifiSSID ..."
-Connect-Wifi -SSID $WifiSSID -Password $WifiPass
+if ($SetupWifi -eq "Yes" -or $SetupWifi -eq "y") {
+    Write-Step "Configuring WiFi Profile for $WifiSSID ..."
+    Connect-Wifi -SSID $WifiSSID -Password $WifiPass
+}
+else {
+    Write-Step "Skipping WiFi configuration for $WifiSSID as requested."
+}
 
 # --- Final Manual Steps ---
 Write-Host "`nMANUAL ACTION REQUIRED: Please sign in to OneDrive and Teams manually." -ForegroundColor Yellow

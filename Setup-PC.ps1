@@ -2,8 +2,8 @@
 .SYNOPSIS
     PC Onboarding Automation Script (Revised)
 .DESCRIPTION
-    v2.0 - Improved reliability for Taskbar, Default Apps, Network, and Printer.
-    Added WhatsApp installation via winget.
+    v2.0 - Improved reliability for Taskbar, Default Apps, and Network.
+    (Printer setup moved to Start-FollowMe.ps1)
 #>
 
 # --- Core Functions ---
@@ -297,42 +297,6 @@ else {
     Write-ErrorMsg "No interactive user detected. WhatsApp install skipped."
 }
 
-# --- Printer Installation (Follow Me via Print Server) ---
-Write-Step "Installing 'Follow Me' printer (User Context)..."
-$PrinterPath = "\\10.58.197.197\FollowMe"
-$TaskName = "PrinterMap_$(Get-Random)"
-
-if ($LoggedUser) {
-    Write-Host "Detected Interactive User: $LoggedUser"
-    Write-Host "Triggering connection and test page for $PrinterPath via Scheduled Task..."
-    
-    try {
-        # Define the action: Map printer (/in), Set Default (/y), then trigger test page (/k)
-        $UserCommand = "rundll32.exe printui.dll,PrintUIEntry /in /n `"$PrinterPath`" /q; Start-Sleep -s 5; rundll32.exe printui.dll,PrintUIEntry /y /n `"$PrinterPath`"; rundll32.exe printui.dll,PrintUIEntry /k /n `"$PrinterPath`""
-        $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$UserCommand`""
-        
-        # Define the principal (Run as the logged-in user, interactive)
-        $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
-        
-        # Register and start the task
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        
-        Write-Success "Printer mapping and test page triggered in $LoggedUser's profile."
-        
-        # Give it time to process before cleanup
-        Start-Sleep -Seconds 15
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    }
-    catch {
-        Write-ErrorMsg "Failed to create or run scheduled task: $($_.Exception.Message)"
-    }
-}
-else {
-    Write-ErrorMsg "No interactive user detected. Ensure you are logged in to the desktop."
-}
-
-
 
 # --- 14. Ethernet/WiFi Check & GPUpdate ---
 Write-Step "Running gpupdate /force..."
@@ -426,10 +390,13 @@ Write-Host " Please manually confirm each of the following:          " -Foregrou
 Write-Host ""
 Write-Host " [ ] Install WhatsApp (Manual EXE/Store)" -ForegroundColor Green
 Write-Host " [ ] Configure Taskbar Shortcuts" -ForegroundColor Green
+Write-Host " [ ] Configure VPN settings - MITA VPN & vpn1.secure.gov.mt" -ForegroundColor Green
 Write-Host " [ ] Set Default Applications" -ForegroundColor Green
 Write-Host " [ ] Test Microsoft Teams (Call/Video)" -ForegroundColor Green
 Write-Host " [ ] Test Remote Control (Support)" -ForegroundColor Green
 Write-Host " [ ] Set up & Sign in to OneDrive" -ForegroundColor Green
+Write-Host " [ ] Send Trandfer of Asset Sheet" -ForegroundColor Green
+Write-Host " [ ] Run Start-FollowMe.ps1 (Printer Setup)" -ForegroundColor Green
 Write-Host ""
 Write-Host " IMPORTANT: Verify all automated steps (Office, WiFi, VPN, etc.)"
 Write-Host " are functioning correctly before handing over the PC.  " -ForegroundColor Yellow

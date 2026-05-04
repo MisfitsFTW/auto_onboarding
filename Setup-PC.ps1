@@ -3,7 +3,7 @@
     PC Onboarding Automation Script (Revised)
 .DESCRIPTION
     v2.0 - Improved reliability for Taskbar, Default Apps, and Network.
-    (Printer setup moved to Start-FollowMe.ps1)
+    (Printer setup moved to FollowMe.ps1)
 #>
 
 # --- Core Functions ---
@@ -140,7 +140,7 @@ else {
 # --- 2. Brand Selection (UI) ---
 Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
 Write-Host "1. HP (HP Support Assistant)"
-Write-Host "2. Dell (Dell Command Centre)"
+Write-Host "2. Dell (.NET SDK & Dell Command Centre)"
 Write-Host "3. ASUS (MyASUS)"
 Write-Host "4. Skip / Other"
 $BrandChoice = Read-Host "Enter Choice (1-4)"
@@ -242,7 +242,21 @@ switch ($BrandChoice) {
         }
     }
     "2" {
+        $DotNetExe = Join-Path $InstallersDir "dotnet-sdk-8.0.420-win-x64.exe"
         $DellExe = Join-Path $InstallersDir "DellCommandCentre.exe"
+
+        # 1. Install .NET SDK
+        Write-Step "Installing .NET SDK 8.0.420..."
+        if (Test-Path $DotNetExe) {
+            Start-Process -FilePath $DotNetExe -ArgumentList "/quiet /norestart" -Wait
+            Write-Success ".NET SDK installation finished."
+        }
+        else {
+            Write-ErrorMsg ".NET SDK installer not found at $DotNetExe"
+        }
+
+        # 2. Install Dell Command Centre
+        Write-Step "Installing Dell Command Centre..."
         if (Test-Path $DellExe) {
             Start-Process -FilePath $DellExe -ArgumentList "/S" -Wait
             Write-Success "Dell Command Centre installation triggered."
@@ -396,7 +410,7 @@ Write-Host " [ ] Test Microsoft Teams (Call/Video)" -ForegroundColor Green
 Write-Host " [ ] Test Remote Control (Support)" -ForegroundColor Green
 Write-Host " [ ] Set up & Sign in to OneDrive" -ForegroundColor Green
 Write-Host " [ ] Send Trandfer of Asset Sheet" -ForegroundColor Green
-Write-Host " [ ] Run Start-FollowMe.ps1 (Printer Setup)" -ForegroundColor Green
+Write-Host " [ ] Run Start-Printer.bat (Printer Setup)" -ForegroundColor Green
 Write-Host ""
 Write-Host " IMPORTANT: Verify all automated steps (Office, WiFi, VPN, etc.)"
 Write-Host " are functioning correctly before handing over the PC.  " -ForegroundColor Yellow

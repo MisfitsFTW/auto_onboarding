@@ -91,7 +91,22 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 }
 
 $ScriptDir = $PSScriptRoot
+
+# 1. First check relative to script execution directory (e.g. if run directly from USB drive)
 $InstallersDir = Join-Path $ScriptDir "Installers"
+
+# 2. If not found in current folder, search all active drives (removable or fixed) for "Auto Onboarding\Installers"
+if (!(Test-Path $InstallersDir)) {
+    $DetectedInstallersDir = Get-CimInstance Win32_LogicalDisk | ForEach-Object {
+        $Candidate = Join-Path "$($_.DeviceID)\" "Auto Onboarding\Installers"
+        if (Test-Path $Candidate) { $Candidate }
+    } | Select-Object -First 1
+
+    if ($DetectedInstallersDir) {
+        $InstallersDir = $DetectedInstallersDir
+    }
+}
+Write-Host "Using Installers Directory: $InstallersDir" -ForegroundColor Yellow
 
 # Detect the current interactive user for per-user mappings (WhatsApp, Printer, Registry)
 $LoggedUser = (Get-CimInstance Win32_ComputerSystem).UserName
@@ -137,6 +152,42 @@ else {
     Write-Step "Skipping Office 365 installation as requested."
 }
 
+# --- 1b. Configure Outlook (Classic) Auto-Profile & Preferences ---
+Write-Step "Configuring Outlook (Classic) Auto-Profile (ZeroConfigExchange) & Preferences..."
+
+# System-wide policies in HKLM
+$HklmAutodiscover = "HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Outlook\AutoDiscover"
+if (!(Test-Path $HklmAutodiscover)) { New-Item -Path $HklmAutodiscover -Force | Out-Null }
+Set-ItemProperty -Path $HklmAutodiscover -Name "ZeroConfigExchange" -Value 1 -Type DWord -Force | Out-Null
+
+$HklmOptions = "HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Outlook\Options\General"
+if (!(Test-Path $HklmOptions)) { New-Item -Path $HklmOptions -Force | Out-Null }
+Set-ItemProperty -Path $HklmOptions -Name "HideNewOutlookToggle" -Value 1 -Type DWord -Force | Out-Null
+
+# Per-user HKCU configuration for $LoggedUser
+if ($LoggedUser) {
+    $OutlookTaskName = "OutlookConfig_$(Get-Random)"
+    $OutlookRegCmd = "if (!(Test-Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\AutoDiscover')) { New-Item -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\AutoDiscover' -Force }; " +
+    "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\AutoDiscover' -Name 'ZeroConfigExchange' -Value 1 -Type DWord -Force; " +
+    "if (!(Test-Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General')) { New-Item -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General' -Force }; " +
+    "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General' -Name 'HideNewOutlookToggle' -Value 1 -Type DWord -Force; " +
+    "if (!(Test-Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences')) { New-Item -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences' -Force }; " +
+    "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences' -Name 'UseNewOutlook' -Value 0 -Type DWord -Force"
+
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$OutlookRegCmd`""
+    $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+    try {
+        Register-ScheduledTask -TaskName $OutlookTaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $OutlookTaskName -ErrorAction Stop
+        Start-Sleep -Seconds 3
+        Unregister-ScheduledTask -TaskName $OutlookTaskName -Confirm:$false
+        Write-Success "Outlook (Classic) auto-profile registry settings applied for $LoggedUser."
+    }
+    catch {
+        Write-ErrorMsg "Failed to apply user Outlook registry settings: $($_.Exception.Message)"
+    }
+}
+
 # --- 2. Brand Selection (UI) ---
 Write-Host "`nSelect Laptop Brand for System Tool installation:" -ForegroundColor Yellow
 Write-Host "1. HP (HP Support Assistant)"
@@ -156,15 +207,32 @@ if (Test-Path $SigZip) {
     Expand-Archive -Path $SigZip -DestinationPath $SigTemp -Force
     $VbsPath = Join-Path $SigTemp $SigVbsName
     if (Test-Path $VbsPath) {
-        Write-Step "Executing Email Signature script (waiting max 30s)..."
-        $sigProcess = Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -PassThru
-        # If the signature script takes too long, move on automatically
-        $sigProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
-        if (!$sigProcess.HasExited) {
-            Write-Warning "Signature script is taking too long, proceeding to next steps..."
+        if ($LoggedUser) {
+            Write-Step "Executing Email Signature script in $LoggedUser's context..."
+            $SigTaskName = "EmailSig_$(Get-Random)"
+            $Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$VbsPath`""
+            $Principal = New-ScheduledTaskPrincipal -UserId $LoggedUser -LogonType Interactive
+            try {
+                Register-ScheduledTask -TaskName $SigTaskName -Action $Action -Principal $Principal -ErrorAction Stop | Out-Null
+                Start-ScheduledTask -TaskName $SigTaskName -ErrorAction Stop
+                Write-Success "Email Signature script triggered in $LoggedUser's context."
+                Start-Sleep -Seconds 10
+                Unregister-ScheduledTask -TaskName $SigTaskName -Confirm:$false
+            }
+            catch {
+                Write-ErrorMsg "Failed to execute signature script in user context: $($_.Exception.Message)"
+            }
         }
         else {
-            Write-Success "Email Signature script finished."
+            Write-Step "Executing Email Signature script (waiting max 30s)..."
+            $sigProcess = Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -PassThru
+            $sigProcess | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+            if (!$sigProcess.HasExited) {
+                Write-Warning "Signature script is taking too long, proceeding to next steps..."
+            }
+            else {
+                Write-Success "Email Signature script finished."
+            }
         }
     }
     else {
